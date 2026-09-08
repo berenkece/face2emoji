@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="tr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Face2Emoji</title>
+    <link
+      rel="stylesheet"
+      href="{{ url_for('static', filename='css/style.css') }}"
+    />
+  </head>
+  <body>
+    <div class="stage" id="stage">
+      <img id="video" src="/video" alt="Face2Emoji canlı görüntü" />
+      <div id="bubble" aria-live="polite">
+        <div class="face" id="bubble-face">😐</div>
+      </div>
+    </div>
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+  </body>
+</html>
