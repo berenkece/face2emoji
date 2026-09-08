@@ -1,0 +1,6 @@
+venv/
+__pycache__/
+*.pyc
+models/*.task
+!models/.gitkeep
+.DS_Store
