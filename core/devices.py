@@ -11,12 +11,15 @@ None döner; çağıran taraf index 0'a düşmelidir.
 
 from __future__ import annotations
 
+import logging
 from typing import List, NamedTuple, Optional
 
 # Dahili MacBook kamerasının AVFoundation cihaz tipi. Continuity Camera
 # (iPhone) "AVCaptureDeviceTypeContinuityCamera" olarak gelir ve elenir.
 _BUILTIN_TYPE = "AVCaptureDeviceTypeBuiltInWideAngleCamera"
 _BUILTIN_NAME_HINTS = ("macbook", "facetime", "built-in", "imac", "studio display")
+
+logger = logging.getLogger(__name__)
 
 
 class CameraDevice(NamedTuple):
@@ -65,10 +68,31 @@ def list_devices() -> List[CameraDevice]:
 def find_builtin_index() -> Optional[int]:
     """Dahili Mac kamerasının OpenCV index'ini döndürür.
 
+    Dahili kamera bulunamazsa çağıran taraf index 0'a düşer; bu sessiz kalırsa
+    yanlış kamera açılır ve kimse fark etmez. Bu yüzden her başarısızlık
+    durumu net bir uyarıyla loglanır.
+
     Returns:
         Index, ya da cihaz listesi alınamazsa / dahili kamera bulunamazsa None.
     """
-    for device in list_devices():
+    devices = list_devices()
+
+    if not devices:
+        logger.warning(
+            "Kamera cihaz listesi alınamadı (pyobjc kurulu değil ya da platform "
+            "macOS değil). Kamera index 0 kullanılacak -- YANLIŞ KAMERA "
+            "açılabilir (macOS'ta Continuity Camera iPhone'u index 0'a itebilir). "
+            "Kameraları görmek için: python scratch_camera.py --list"
+        )
+        return None
+
+    for device in devices:
         if device.is_builtin:
             return device.index
+
+    logger.warning(
+        "Dahili Mac kamerası bulunamadı; index 0 kullanılacak -- YANLIŞ KAMERA "
+        "açılabilir. Bulunan cihazlar: %s",
+        ", ".join(f"{d.index}: {d.name} [{d.device_type}]" for d in devices),
+    )
     return None

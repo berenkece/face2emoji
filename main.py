@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from app.pipeline import Pipeline
 from app.server import create_app
 from config import (
@@ -12,8 +14,10 @@ from config import (
     EMOJI_FALLBACK,
     EMOJI_RULES,
     FACE_MODEL_PATH,
+    HOST,
     MIN_FACE_DETECTION_CONFIDENCE,
     NUM_FACES,
+    PORT,
     SMOOTHING_ALPHA,
     STABILITY_FRAMES,
 )
@@ -22,12 +26,15 @@ from core.face import FaceAnalyzer
 from core.mapping import EmojiMapper
 from core.renderer import BubbleRenderer
 
-HOST = "127.0.0.1"
-PORT = 5000
-
 
 def main() -> None:
     """Kamerayı ve modeli başlatır, sunucuyu çalıştırır, çıkışta kaynakları bırakır."""
+    # Worker'in yeniden baglanma ve kamera secimi mesajlari gorunsun.
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
     camera = CameraStream(
         width=CAMERA_WIDTH,
         height=CAMERA_HEIGHT,
@@ -48,8 +55,9 @@ def main() -> None:
     pipeline = Pipeline(camera, face_analyzer, emoji_mapper, BubbleRenderer())
     app = create_app(pipeline)
 
-    pipeline.start()
     try:
+        # start() modelin yuklenmesini bekler; hata olursa burada firlar.
+        pipeline.start()
         # use_reloader=False sart: reloader ikinci bir surec baslatir ve
         # kamera iki kez acilmaya calisilir.
         app.run(

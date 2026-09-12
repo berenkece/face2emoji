@@ -2,7 +2,7 @@
 
 Bu dosya bilerek Flask'tan bağımsızdır.
 
-Kurulu mediapipe 1.0.1'de doğrulanmış API isimleri:
+Kurulu mediapipe 0.10.35'te doğrulanmış API isimleri:
 ``mediapipe.tasks.python.vision.FaceLandmarker`` / ``FaceLandmarkerOptions`` /
 ``RunningMode`` (IMAGE, VIDEO, LIVE_STREAM).
 """

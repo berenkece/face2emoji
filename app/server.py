@@ -52,19 +52,23 @@ def _state_payload(pipeline: Pipeline) -> Dict[str, Any]:
         pipeline: Durumu okunacak Pipeline.
 
     Returns:
-        ``emoji``, ``label``, ``score`` ve yüz yoksa None olan ``face`` alanları.
+        ``emoji``, ``label``, ``score``, yüz yoksa None olan ``face`` ve
+        kamera yeniden bağlanırken False olan ``camera_ok`` alanları.
     """
-    decision = pipeline.current_decision
-    bbox_norm = pipeline.last_face_result.bbox_norm
+    # Tek kilit altinda alinmis tutarli goruntu: karar ile yuz kutusu ayni
+    # kareden gelir, ikisi farkli karelerden karismaz.
+    state = pipeline.snapshot()
+    bbox_norm = state.face_result.bbox_norm
 
     face = None
-    if pipeline.last_face_result.detected and bbox_norm is not None:
+    if state.face_result.detected and bbox_norm is not None:
         x, y, w, h = bbox_norm
         face = {"x": round(x, 4), "y": round(y, 4), "w": round(w, 4), "h": round(h, 4)}
 
     return {
-        "emoji": decision.emoji,
-        "label": decision.label,
-        "score": round(decision.score, 4),
+        "emoji": state.decision.emoji,
+        "label": state.decision.label,
+        "score": round(state.decision.score, 4),
         "face": face,
+        "camera_ok": state.camera_ok,
     }

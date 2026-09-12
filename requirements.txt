@@ -1,33 +1,27 @@
-absl-py==2.5.0
-blinker==1.9.0
-certifi==2026.7.22
-cffi==2.1.1
-click==8.5.0
-contourpy==1.3.3
-cycler==0.12.1
-Flask==3.1.3
-flatbuffers==25.12.19
-fonttools==4.64.0
-itsdangerous==2.2.0
-Jinja2==3.1.6
-kiwisolver==1.5.1
-MarkupSafe==3.0.3
-matplotlib==3.11.1
-mediapipe==0.10.35
-numpy==2.5.3
-opencv-contrib-python==5.0.0.93
+# Face2Emoji - dogrudan bagimliliklar.
+#
+# Dolayli bagimliliklar (absl-py, matplotlib, opencv-contrib-python, pillow,
+# protobuf, sounddevice, Werkzeug, Jinja2 vb.) flask ve mediapipe tarafindan
+# otomatik kurulur; burada listelenmezler.
+#
+# Tum surumler sabitlenmistir: etkinlik oncesi "dun calisiyordu" surprizi
+# yasanmasin diye yeni bir kurulum her zaman ayni surumleri getirir.
+
+flask==3.1.3
 opencv-python==5.0.0.93
-packaging==26.3
-pillow==12.3.0
-pycparser==3.0
-pyobjc-core==12.2.2
-pyobjc-framework-AVFoundation==12.2.2
-pyobjc-framework-Cocoa==12.2.2
-pyobjc-framework-CoreAudio==12.2.2
-pyobjc-framework-CoreMedia==12.2.2
-pyobjc-framework-Quartz==12.2.2
-pyparsing==3.3.2
-python-dateutil==2.9.0.post0
-six==1.17.0
-sounddevice==0.5.6
-Werkzeug==3.1.8
+numpy==2.5.3
+
+# SURUM SABIT - YUKSELTMEYIN.
+# mediapipe 1.0.1, macOS arm64'te FaceLandmarker olustururken native crash
+# veriyor (DrishtiMetalHelper / Metal servisi bulunamiyor). Bu bir Python
+# istisnasi degil, surecin tamami oluyor; try/except ile yakalanamaz.
+# 0.10.35 ayni model dosyasiyla sorunsuz calisiyor.
+# Ayrinti icin README > Bilinen sorunlar.
+mediapipe==0.10.35
+
+# Dahili Mac kamerasini dogru secmek icin (core/devices.py). macOS'ta
+# Continuity Camera, iPhone'u OpenCV index 0'a itebiliyor; AVFoundation cihaz
+# listesi okunarak dahili kameranin gercek index'i bulunuyor.
+# Yalnizca macOS'ta kurulur, boylece Linux/Windows'ta kurulum patlamaz.
+pyobjc-core==12.2.2 ; sys_platform == "darwin"
+pyobjc-framework-AVFoundation==12.2.2 ; sys_platform == "darwin"

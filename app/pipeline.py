@@ -1,21 +1,40 @@
-"""Kamera karelerini işleyip MJPEG akışına çeviren katman.
+"""Kamerayı tek bir arka plan worker'ında okuyup MJPEG'e çeviren katman.
 
 Bu dosya bilerek Flask'tan bağımsızdır: HTTP katmanı (app/server.py) burayı
 kullanır, tersi olmaz.
+
+Mimari: **üretici-tüketici**. Kamerayı yalnızca worker thread'i okur; HTTP
+bağlantıları (tüketiciler) worker'ın yayımladığı son kareyi bekleyip gönderir.
+Böylece kaç sekme açık olursa olsun worker hızı değişmez ve FaceAnalyzer ile
+EmojiMapper tek thread'den erişildiği için kilide ihtiyaç duymaz.
 """
 
 from __future__ import annotations
 
-from typing import Iterator, Optional
+import logging
+import threading
+import time
+from typing import Iterator, NamedTuple, Optional, Tuple
 
 import cv2
 import numpy as np
 
-from config import DEBUG_OVERLAY, JPEG_QUALITY, WATCH_BLENDSHAPES
+from config import (
+    CAMERA_RECONNECT_DELAYS,
+    CONSUMER_WAIT_TIMEOUT,
+    DEBUG_OVERLAY,
+    JPEG_QUALITY,
+    TARGET_FPS,
+    WATCH_BLENDSHAPES,
+    WORKER_START_TIMEOUT,
+    WORKER_STOP_TIMEOUT,
+)
 from core.camera import CameraStream
 from core.face import FaceAnalyzer, FaceResult
 from core.mapping import EmojiDecision, EmojiMapper
 from core.renderer import BubbleRenderer
+
+logger = logging.getLogger(__name__)
 
 Frame = np.ndarray
 
@@ -23,8 +42,23 @@ Frame = np.ndarray
 BOUNDARY = b"frame"
 
 
+class PipelineState(NamedTuple):
+    """Tek kilit altında alınmış tutarlı durum görüntüsü."""
+
+    decision: EmojiDecision
+    face_result: FaceResult
+    frame_id: int
+    camera_ok: bool
+
+
 class Pipeline:
-    """Kameradan kare alır, işler ve MJPEG parçaları üretir."""
+    """Kamerayı tek worker'da okur, tüketicilere son kareyi dağıtır.
+
+    Tasarım kararı: tek kamera, tek sahne. **Tüm izleyiciler aynı EmojiMapper
+    durumunu ve aynı kararı paylaşır**; ``/state`` küresel tek bir karar
+    döndürür. Bu bilinçli bir tercihtir, hata değil: stand kurulumunda kadrajda
+    tek kişi vardır ve tüm ekranların aynı şeyi göstermesi istenir.
+    """
 
     def __init__(
         self,
@@ -45,35 +79,267 @@ class Pipeline:
         self.face_analyzer = face_analyzer
         self.emoji_mapper = emoji_mapper
         self.renderer = renderer
-        #: Son karenin analiz sonucu; diğer katmanlar buradan okuyabilir.
-        self.last_face_result = FaceResult(detected=False)
-        #: Son emoji kararı. Emoji kareye çizilmez; HTML katmanı buradan okur.
-        self.current_decision: EmojiDecision = emoji_mapper.current
+
+        # Paylasilan durum: yalnizca bu kilit altinda okunur/yazilir.
+        self._lock = threading.Lock()
+        self._cond = threading.Condition(self._lock)
+        self._latest_jpeg: Optional[bytes] = None
+        self._latest_face = FaceResult(detected=False)
+        self._latest_decision: EmojiDecision = emoji_mapper.current
+        self._frame_id = 0
+        self._camera_ok = False
+
+        # Worker yasam dongusu.
+        self._worker: Optional[threading.Thread] = None
+        self._stop_event = threading.Event()
+        self._ready = threading.Event()
+        self._load_error: Optional[BaseException] = None
+
+    # --- yaşam döngüsü -----------------------------------------------------
 
     def start(self) -> None:
-        """Kamerayı açar ve yüz modelini yükler."""
+        """Kamerayı açar, worker'ı başlatır ve modelin yüklenmesini bekler.
+
+        Raises:
+            RuntimeError: Kamera açılamazsa ya da worker süresinde hazır olmazsa.
+            Exception: Modelin yüklenmesi sırasında oluşan hata (ör. model
+                dosyası yoksa ``FileNotFoundError``) burada yeniden fırlatılır.
+        """
+        if self._worker is not None and self._worker.is_alive():
+            return
+
+        self._stop_event.clear()
+        self._ready.clear()
+        self._load_error = None
+
+        # Bilincli asimetri: KAMERA ana thread'de aciliyor, MODEL worker'in
+        # icinde yaratiliyor.
+        #   - Kamera: mevcut kod zaten kamerayi thread'ler arasi kullaniyor ve
+        #     calistigina dair ampirik kanit var. Ayrica ana thread'de acmak
+        #     macOS kamera izni hatasini acilista gorunur kiliyor.
+        #   - Model: boyle bir kanit yoktu. Thread bagliligi riskini sarta
+        #     baglamak yerine tamamen ortadan kaldiriyoruz; model worker'da
+        #     yaratilip yalnizca orada kullaniliyor.
         self.camera.open()
-        self.face_analyzer.load()
 
-    def process(self, frame: Frame) -> Frame:
-        """Kareyi analiz eder, emoji kararını günceller ve debug öğelerini çizer.
+        worker = threading.Thread(
+            target=self._run, name="face2emoji-worker", daemon=True
+        )
+        self._worker = worker
+        worker.start()
 
-        Emoji kareye çizilmez; yalnızca ``current_decision`` güncellenir.
+        if not self._ready.wait(WORKER_START_TIMEOUT):
+            raise RuntimeError(
+                f"Yüz modeli {WORKER_START_TIMEOUT:.0f} saniyede yüklenemedi ve "
+                "worker başlamadı. Model dosyası çok yavaş bir diskten "
+                "okunuyor olabilir; config.py içindeki WORKER_START_TIMEOUT "
+                "değerini artırmayı deneyin."
+            )
+        if self._load_error is not None:
+            raise self._load_error
+
+    def stop(self) -> None:
+        """Worker'ı durdurur, kamerayı ve modeli bırakır. Birden çok kez çağrılabilir."""
+        self._stop_event.set()
+        with self._cond:
+            self._cond.notify_all()
+
+        worker = self._worker
+        if (
+            worker is not None
+            and worker.is_alive()
+            and worker is not threading.current_thread()
+        ):
+            worker.join(WORKER_STOP_TIMEOUT)
+            if worker.is_alive():
+                logger.warning(
+                    "Worker %.1f saniyede durmadı; kaynaklar yine de bırakılıyor.",
+                    WORKER_STOP_TIMEOUT,
+                )
+        self._worker = None
+
+        self.camera.release()
+        self.face_analyzer.close()
+
+    # --- worker ------------------------------------------------------------
+
+    def _run(self) -> None:
+        """Worker thread'inin giriş noktası: önce modeli yükler, sonra döngü."""
+        try:
+            self.face_analyzer.load()
+        except BaseException as error:  # noqa: BLE001 - ana thread'e tasinacak
+            self._load_error = error
+            return
+        finally:
+            # Basari da hata da ana thread'e bildirilmeli.
+            self._ready.set()
+
+        self._loop()
+
+    def _loop(self) -> None:
+        """Kare okur, işler ve yayımlar. Programda kameraya dokunan tek yer."""
+        interval = 1.0 / TARGET_FPS if TARGET_FPS > 0 else 0.0
+        failures = 0
+
+        while not self._stop_event.is_set():
+            started = time.monotonic()
+            frame = self.camera.read()
+
+            if frame is None:
+                failures += 1
+                self._set_camera_ok(False)
+                if self._reconnect(failures):
+                    failures = 0
+                continue
+
+            failures = 0
+            self._publish(frame)
+
+            remaining = interval - (time.monotonic() - started)
+            if remaining > 0:
+                # Kesintiye ugrayabilen uyku: stop() aninda uyanir.
+                self._stop_event.wait(remaining)
+
+    def _process(self, frame: Frame) -> Tuple[Frame, FaceResult, EmojiDecision]:
+        """Kareyi analiz eder, kararı üretir ve debug öğelerini çizer.
+
+        Emoji kareye çizilmez; HTML katmanı ``/state``'ten okur.
 
         Args:
             frame: İşlenecek BGR kare.
 
         Returns:
-            Görüntülenecek BGR kare.
+            (çizilmiş kare, yüz sonucu, emoji kararı) üçlüsü.
         """
-        self.last_face_result = self.face_analyzer.analyze(frame)
-        self.current_decision = self.emoji_mapper.decide(self.last_face_result)
-        frame = self.renderer.draw_face_box(frame, self.last_face_result.bbox)
+        face = self.face_analyzer.analyze(frame)
+        decision = self.emoji_mapper.decide(face)
+
+        drawn = self.renderer.draw_face_box(frame, face.bbox)
         if DEBUG_OVERLAY:
-            frame = self.renderer.draw_debug(
-                frame, self.last_face_result.blendshapes, WATCH_BLENDSHAPES
+            drawn = self.renderer.draw_debug(
+                drawn, face.blendshapes, WATCH_BLENDSHAPES
             )
-        return frame
+        return drawn, face, decision
+
+    def _publish(self, frame: Frame) -> None:
+        """Kareyi işler ve paylaşılan duruma yazıp tüketicileri uyandırır."""
+        drawn, face, decision = self._process(frame)
+        jpeg = self.encode_jpeg(drawn)
+        if jpeg is None:
+            return
+
+        with self._cond:
+            self._latest_jpeg = jpeg
+            self._latest_face = face
+            self._latest_decision = decision
+            self._camera_ok = True
+            self._frame_id += 1
+            self._cond.notify_all()
+
+    def _set_camera_ok(self, value: bool) -> None:
+        """Kamera durumunu kilit altında günceller."""
+        with self._cond:
+            self._camera_ok = value
+
+    def _reconnect(self, attempt: int) -> bool:
+        """Kamerayı artan beklemeyle kapatıp yeniden açmayı dener.
+
+        Bu sırada yeni kare yayımlanmadığı için tüketiciler son geçerli kareyi
+        göstermeye devam eder (donmuş görüntü, siyah ekran değil).
+
+        Args:
+            attempt: Kaçıncı ardışık başarısızlık (1'den başlar).
+
+        Returns:
+            Yeniden bağlanma başarılıysa True.
+        """
+        index = min(attempt - 1, len(CAMERA_RECONNECT_DELAYS) - 1)
+        delay = CAMERA_RECONNECT_DELAYS[index]
+        logger.warning(
+            "Kameradan kare alınamadı (ardışık %d. hata). "
+            "%.1f saniye sonra yeniden bağlanılacak.",
+            attempt,
+            delay,
+        )
+        if self._stop_event.wait(delay):
+            return False
+
+        # release() sart: kopmus kamerada isOpened() hala True donebiliyor,
+        # bu durumda open() erken cikip sahte basari verir.
+        self.camera.release()
+        try:
+            self.camera.open()
+        except RuntimeError as error:
+            logger.warning("Kamera yeniden açılamadı: %s", error)
+            return False
+
+        logger.info("Kameraya yeniden bağlanıldı (%d. denemede).", attempt)
+        return True
+
+    # --- tüketiciler -------------------------------------------------------
+
+    def mjpeg_frames(self) -> Iterator[bytes]:
+        """Worker'ın yayımladığı kareleri multipart MJPEG blokları olarak verir.
+
+        Kameraya dokunmaz. Her tüketici yalnızca kendi görmediği bir kare
+        geldiğinde uyanır; aynı kare iki kez gönderilmez ve meşgul bekleme
+        yapılmaz.
+
+        Yields:
+            ``--frame`` sınırı, JPEG başlığı ve kare verisinden oluşan bloklar.
+        """
+        last_seen = -1
+
+        while not self._stop_event.is_set():
+            with self._cond:
+                ready = self._cond.wait_for(
+                    lambda: self._stop_event.is_set()
+                    or (
+                        self._frame_id != last_seen
+                        and self._latest_jpeg is not None
+                    ),
+                    timeout=CONSUMER_WAIT_TIMEOUT,
+                )
+                if self._stop_event.is_set():
+                    return
+                if not ready:
+                    # Zaman asimi: yeni kare yok (ornegin kamera kopuk).
+                    continue
+                jpeg = self._latest_jpeg
+                last_seen = self._frame_id
+
+            yield (
+                b"--" + BOUNDARY + b"\r\n"
+                b"Content-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n"
+            )
+
+    def snapshot(self) -> PipelineState:
+        """Kararı, yüz sonucunu ve kamera durumunu tek kilit altında döndürür.
+
+        Returns:
+            Aynı kareye ait tutarlı PipelineState.
+        """
+        with self._cond:
+            return PipelineState(
+                decision=self._latest_decision,
+                face_result=self._latest_face,
+                frame_id=self._frame_id,
+                camera_ok=self._camera_ok,
+            )
+
+    @property
+    def current_decision(self) -> EmojiDecision:
+        """Kilit altında okunan son emoji kararı."""
+        with self._cond:
+            return self._latest_decision
+
+    @property
+    def last_face_result(self) -> FaceResult:
+        """Kilit altında okunan son yüz analizi sonucu."""
+        with self._cond:
+            return self._latest_face
+
+    # --- yardımcı ----------------------------------------------------------
 
     def encode_jpeg(self, frame: Frame) -> Optional[bytes]:
         """Kareyi JPEG baytlarına çevirir.
@@ -90,24 +356,3 @@ class Pipeline:
         if not ok:
             return None
         return buffer.tobytes()
-
-    def mjpeg_frames(self) -> Iterator[bytes]:
-        """İşlenmiş kareleri multipart MJPEG blokları olarak üretir.
-
-        Yields:
-            ``--frame`` sınırı, JPEG başlığı ve kare verisinden oluşan bloklar.
-            Kamera akışı bitince generator sona erer.
-        """
-        for frame in self.camera.frames():
-            jpeg = self.encode_jpeg(self.process(frame))
-            if jpeg is None:
-                continue
-            yield (
-                b"--" + BOUNDARY + b"\r\n"
-                b"Content-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n"
-            )
-
-    def stop(self) -> None:
-        """Kamerayı ve yüz modelini serbest bırakır. Birden çok kez çağrılabilir."""
-        self.camera.release()
-        self.face_analyzer.close()

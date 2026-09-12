@@ -84,3 +84,29 @@ SMOOTHING_ALPHA = 0.6
 
 #: Yeni bir kazananin karari degistirmesi icin gereken ust uste kare sayisi.
 STABILITY_FRAMES = 4
+
+# --- Sunucu ---
+HOST = "127.0.0.1"
+
+#: DIKKAT: port 5000 macOS'ta AirPlay Receiver (ControlCenter) tarafindan
+#: dinleniyor ve baglantilari kapiyor -- olculdu: ayni kod 5056'da 30 fps,
+#: 5000'de 0 kare. Bu yuzden varsayilan 5001. AirPlay'i kapatirsaniz
+#: 5000'e donebilirsiniz.
+PORT = 5001
+
+# --- Worker (uretici-tuketici) ---
+#: Worker bu kare hizini asmaya calismaz; bosuna CPU yakmasin.
+TARGET_FPS = 30
+
+#: start() modelin yuklenmesini bu kadar bekler. Bilerek comert: ilk yukleme
+#: yavas olabilir ve dar bir timeout acilista sahte hata uretir.
+WORKER_START_TIMEOUT = 30.0
+
+#: stop() worker'in bitmesini bu kadar bekler.
+WORKER_STOP_TIMEOUT = 5.0
+
+#: Tuketici bu araliklarla uyanip durdurma bayragini kontrol eder.
+CONSUMER_WAIT_TIMEOUT = 1.0
+
+#: Kamera kopunca yeniden baglanma gecikmeleri; son deger tekrarlanir.
+CAMERA_RECONNECT_DELAYS = (0.5, 1.0, 2.0, 5.0)

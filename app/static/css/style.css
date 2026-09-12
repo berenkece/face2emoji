@@ -84,3 +84,40 @@ body {
     animation: none;
   }
 }
+
+/* Kamera uyarisi: operatorun gorecegi kadar belirgin, izleyiciyi
+   urkutmeyecek kadar sakin. Yanip sonme yok. */
+#camera-status {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  border-radius: 999px;
+  background: rgba(20, 20, 20, 0.72);
+  color: #e8d9b0;
+  font: 500 13px/1 system-ui, -apple-system, "Segoe UI", sans-serif;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 260ms ease-out;
+}
+
+#camera-status.visible {
+  opacity: 1;
+}
+
+#camera-status::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #d8a23a;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #camera-status {
+    transition: none;
+  }
+}

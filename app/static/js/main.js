@@ -12,13 +12,17 @@
   var GAP_RATIO = 0.15;
   /* Pop animasyonu suresi (style.css ile ayni olmali). */
   var POP_MS = 260;
+  /* Bu kadar ust uste basarisiz istekten sonra baloncuk gizlenir. */
+  var MAX_FAILURES = 3;
 
   var video = document.getElementById("video");
   var bubble = document.getElementById("bubble");
   var bubbleFace = document.getElementById("bubble-face");
+  var cameraStatus = document.getElementById("camera-status");
 
   var lastEmoji = null;
   var popTimer = null;
+  var consecutiveFailures = 0;
 
   /**
    * <img> object-fit:contain ile olceklendiginde goruntunun stage koordinat
@@ -105,13 +109,42 @@
     bubble.classList.add("visible");
   }
 
+  /** Kamera uyarisini gosterir ya da gizler. */
+  function setCameraStatus(visible) {
+    if (!cameraStatus) {
+      return;
+    }
+    cameraStatus.hidden = !visible;
+    /* hidden kalkmadan once sinif eklenirse gecis oynamaz. */
+    if (visible) {
+      void cameraStatus.offsetWidth;
+    }
+    cameraStatus.classList.toggle("visible", visible);
+  }
+
+  /** Sunucuya ulasilamadiginda arayuzu durdurur. */
+  function handleFailure() {
+    consecutiveFailures += 1;
+    if (consecutiveFailures >= MAX_FAILURES) {
+      /* Sunucu olmusse ekranda donmus emoji kalmasin. */
+      hideBubble();
+      setCameraStatus(false);
+    }
+  }
+
   /** /state'i okur ve arayuzu gunceller. */
   function poll() {
     fetch("/state", { cache: "no-store" })
       .then(function (response) {
+        if (!response.ok) {
+          throw new Error("HTTP " + response.status);
+        }
         return response.json();
       })
       .then(function (state) {
+        consecutiveFailures = 0;
+        setCameraStatus(state.camera_ok === false);
+
         setEmoji(state.emoji);
         if (state.face) {
           placeBubble(state.face);
@@ -119,10 +152,16 @@
           hideBubble();
         }
       })
-      .catch(function () {
-        /* Sunucu bir an cevap vermezse son durum korunur. */
-      });
+      .catch(handleFailure);
   }
+
+  /* Sekme arka plandayken tarayici setInterval'i kisiyor; geri gelince
+     bekleme olmadan tazele. */
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden) {
+      poll();
+    }
+  });
 
   window.setInterval(poll, POLL_MS);
   poll();
