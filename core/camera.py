@@ -8,6 +8,7 @@ from typing import Iterator, Optional, Type, Union
 import cv2
 import numpy as np
 
+from config import CAMERA_REQUIRE_BUILTIN
 from core.devices import select_camera_index
 
 Frame = np.ndarray
@@ -17,7 +18,7 @@ def _resolve_source(source: Union[int, str, None]) -> Union[int, str]:
     """None gelirse uygun kamerayı seçer, bulunamazsa index 0'a düşer."""
     if source is not None:
         return source
-    index = select_camera_index()
+    index = select_camera_index(require_builtin=CAMERA_REQUIRE_BUILTIN)
     return 0 if index is None else index
 
 

@@ -100,6 +100,7 @@ Sık kullanılanlar:
 |---|---|
 | `CAMERA_WIDTH` / `CAMERA_HEIGHT` | İstenen kamera çözünürlüğü. |
 | `CAMERA_MIRROR` | Ayna görüntüsü (stand için `True` daha doğal). |
+| `CAMERA_REQUIRE_BUILTIN` | `True` ise yalnızca dahili MacBook kamerası kullanılır; bulunamazsa hata verilir (telefona bağlanmaz). |
 | `DEBUG_OVERLAY` | Blendshape debug panelini açar/kapatır. **Canlı sunumda `False` yapın.** |
 | `WATCH_BLENDSHAPES` | Debug panelinde gösterilecek katsayılar. |
 | `SMOOTHING_ALPHA` | EMA'da yeni örneğin ağırlığı. Küçültmek daha yumuşak ama daha geç tepki verir. |
@@ -211,14 +212,15 @@ Bu **bilinçli bir tasarım kararıdır**, kısıt değil: standda kadrajda tek 
 
 ### iPhone kamerası (Continuity Camera)
 
-macOS, yakındaki iPhone'u bir kamera olarak listeye ekler ve genellikle **index 0'a**, yani dahili kameranın önüne koyar. Proje bunu koddan çözer:
+macOS, yakındaki iPhone'u bir kamera olarak listeye ekler ve genellikle **index 0'a**, yani dahili kameranın önüne koyar. Proje varsayılan olarak **yalnızca dahili MacBook kamerasını** kullanır:
 
+- `CAMERA_REQUIRE_BUILTIN = True` (varsayılan): dahili kamera bulunamazsa **hiçbir şeye düşülmez** — ne telefona, ne harici webcam'e, ne de körlemesine index 0'a. Bunun yerine `NoUsableCameraError` ile açıklayıcı bir hata verilir. Telefona yanlışlıkla bağlanmak imkansızdır.
 - Kamera seçimi her `open()` çağrısında **yeniden** yapılır. Uygulama açıkken telefon menzile girip index'leri kaydırsa bile dahili kameraya bağlı kalınır.
-- Dahili kamera yoksa Continuity **olmayan** ilk cihaz (harici webcam) seçilir.
-- Yalnızca telefon bulunursa bağlanmak yerine açıklayıcı bir hata verilir (`NoUsableCameraError`) — telefona sessizce bağlanmaktansa durmak tercih edilir.
 - Hangi kameranın seçildiği log'a yazılır; seçim değişirse yeniden loglanır.
 
-Belirli bir kamerayı zorlamak isterseniz `CameraStream(source=<index>)` kullanın; index'leri görmek için `python scratch_camera.py --list`.
+Dahili kamera bulunamadı hatası alırsanız genelde sebep, kamerayı başka bir uygulamanın (FaceTime, Zoom, Photo Booth, açık bir tarayıcı sekmesi) tutuyor olmasıdır.
+
+Harici bir webcam kullanmak isterseniz `config.py`'de `CAMERA_REQUIRE_BUILTIN = False` yapın; o zaman sıra dahili kamera → Continuity olmayan ilk cihaz şeklinde işler (telefon yine otomatik seçilmez). Belirli bir kamerayı zorlamak için `CameraStream(source=<index>)`; index'leri görmek için `python scratch_camera.py --list`.
 
 ### Kadrajda birden fazla kişi
 

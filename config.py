@@ -13,6 +13,13 @@ CAMERA_HEIGHT = 720
 CAMERA_MIRROR = True
 CAMERA_WARMUP_FRAMES = 5
 
+#: True ise YALNIZCA dahili Mac kamerasi kullanilir. Dahili kamera
+#: bulunamazsa (iPhone Continuity Camera, harici webcam ya da cihaz listesi
+#: okunamamasi fark etmez) baska bir kameraya DUSULMEZ; acik bir hata verilir.
+#: Telefon kamerasina yanlislikla baglanmayi tamamen imkansiz kilar.
+#: macOS disinda calistiracaksaniz False yapin (cihaz listesi okunamaz).
+CAMERA_REQUIRE_BUILTIN = True
+
 # --- Akış ---
 JPEG_QUALITY = 80
 

@@ -131,10 +131,13 @@ def find_builtin_index() -> Optional[int]:
     return None
 
 
-def select_camera_index() -> Optional[int]:
+def select_camera_index(require_builtin: bool = False) -> Optional[int]:
     """Kullanılacak kameranın OpenCV index'ini seçer.
 
-    Öncelik sırası:
+    ``require_builtin=True`` ise yalnızca dahili Mac kamerası kabul edilir;
+    bulunamazsa hiçbir şeye düşülmez, ``NoUsableCameraError`` fırlatılır.
+
+    ``require_builtin=False`` ise öncelik sırası:
       1. Dahili Mac kamerası.
       2. Continuity Camera **olmayan** ilk cihaz (harici webcam).
       3. Hiçbiri yoksa None -- çağıran taraf index 0'a düşer.
@@ -146,10 +149,40 @@ def select_camera_index() -> Optional[int]:
     Bu fonksiyon her ``CameraStream.open()`` çağrısında yeniden çalıştırılır,
     çünkü cihaz sıralaması telefon menzile girip çıktıkça değişir.
 
+    Args:
+        require_builtin: True ise dahili kameradan başkası kabul edilmez.
+
     Returns:
         Seçilen index, ya da cihaz listesi alınamazsa None.
+
+    Raises:
+        NoUsableCameraError: ``require_builtin=True`` iken dahili kamera
+            bulunamazsa, ya da yalnızca telefon kamerası varsa.
     """
     devices = list_devices()
+
+    for device in devices:
+        if device.is_builtin:
+            _log_selection(device.index, device.name)
+            return device.index
+
+    # Buradan sonrasi: dahili kamera YOK.
+    if require_builtin:
+        raise NoUsableCameraError(
+            "Dahili MacBook kamerası bulunamadı ve CAMERA_REQUIRE_BUILTIN=True "
+            "olduğu için başka bir kameraya düşülmüyor (telefon kamerasına "
+            "yanlışlıkla bağlanmamak için). "
+            + (
+                "Hiçbir kamera cihazı listelenemedi -- pyobjc kurulu değil ya "
+                "da platform macOS değil."
+                if not devices
+                else f"Bulunan cihazlar: {_describe(devices)}."
+            )
+            + " Dahili kamera başka bir uygulama (FaceTime, Zoom, Photo Booth, "
+            "tarayıcı sekmesi) tarafından tutuluyor olabilir; onu kapatıp "
+            "tekrar deneyin. Kameraları listelemek için: "
+            "python scratch_camera.py --list"
+        )
 
     if not devices:
         logger.warning(
@@ -158,11 +191,6 @@ def select_camera_index() -> Optional[int]:
             "açılabilir. Kameraları görmek için: python scratch_camera.py --list"
         )
         return None
-
-    for device in devices:
-        if device.is_builtin:
-            _log_selection(device.index, device.name)
-            return device.index
 
     for device in devices:
         if not device.is_continuity:
