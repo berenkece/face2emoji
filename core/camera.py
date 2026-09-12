@@ -8,16 +8,16 @@ from typing import Iterator, Optional, Type, Union
 import cv2
 import numpy as np
 
-from core.devices import find_builtin_index
+from core.devices import select_camera_index
 
 Frame = np.ndarray
 
 
 def _resolve_source(source: Union[int, str, None]) -> Union[int, str]:
-    """None gelirse dahili kamerayı, bulunamazsa index 0'ı seçer."""
+    """None gelirse uygun kamerayı seçer, bulunamazsa index 0'a düşer."""
     if source is not None:
         return source
-    index = find_builtin_index()
+    index = select_camera_index()
     return 0 if index is None else index
 
 
@@ -42,14 +42,19 @@ class CameraStream:
 
         Args:
             source: Kamera indeksi ya da video dosyası yolu. None (varsayılan)
-                ise Mac'in dahili kamerası otomatik seçilir -- Continuity Camera
-                iPhone'u index 0'a itse bile dahili kamera kullanılır.
+                ise dahili Mac kamerası otomatik seçilir ve bu seçim **her
+                open() çağrısında yeniden yapılır** -- Continuity Camera
+                iPhone'u listeye sokup index'leri kaydırsa bile telefona
+                bağlanılmaz. Açıkça bir index verilirse o index aynen kullanılır.
             width: İstenen kare genişliği (sürücü desteklemeyebilir).
             height: İstenen kare yüksekliği.
             mirror: True ise kareler yatay çevrilir (ayna görüntüsü).
             warmup_frames: open() sonunda okunup atılacak kare sayısı. Kameranın
                 ilk kareleri pozlama oturmadan geldiği için karanlık olur.
         """
+        # Istek olarak sakla: None ise her open()'da yeniden cozulur, cunku
+        # cihaz siralamasi telefon menzile girip ciktikca degisiyor.
+        self._requested_source = source
         self.source: Union[int, str] = _resolve_source(source)
         self.width = width
         self.height = height
@@ -74,6 +79,10 @@ class CameraStream:
         if self.is_open:
             return self
 
+        # Her acilista yeniden coz: uygulama acikken iPhone menzile girerse
+        # AVFoundation siralamasi kayar ve eski index telefonu gosterir.
+        self.source = self._current_source()
+
         cap = cv2.VideoCapture(self.source)
         if not cap.isOpened():
             cap.release()
@@ -91,6 +100,14 @@ class CameraStream:
         self._cap = cap
         self._warm_up()
         return self
+
+    def _current_source(self) -> Union[int, str]:
+        """Bu açılışta kullanılacak kaynağı döndürür.
+
+        Açıkça bir kaynak verildiyse o aynen kullanılır; ``None`` ise cihaz
+        listesi yeniden okunup uygun kamera seçilir.
+        """
+        return _resolve_source(self._requested_source)
 
     def _warm_up(self) -> None:
         """Pozlama oturana kadar ilk kareleri okuyup atar."""

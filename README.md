@@ -79,7 +79,7 @@ Temel kural: **`core/` Flask bilmez.** Görüntü işleme ve karar mantığı we
 | `main.py` | Giriş noktası: bileşenleri `config.py`'den okuyup kurar, sunucuyu başlatır, çıkışta kaynakları bırakır. |
 | `config.py` | Tüm ayarlar ve eşikler. Kodun hiçbir yerinde sabit sayı yok. |
 | `core/camera.py` | `CameraStream` — OpenCV kamera sarmalayıcısı; çözünürlük, ayna görüntüsü, ısınma kareleri, context manager. |
-| `core/devices.py` | macOS'ta kameraları isimleriyle listeler, dahili Mac kamerasının OpenCV index'ini bulur. |
+| `core/devices.py` | macOS'ta kameraları isimleriyle listeler, dahili Mac kamerasının OpenCV index'ini bulur; iPhone/iPad (Continuity Camera) asla otomatik seçilmez. |
 | `core/face.py` | `FaceAnalyzer` — MediaPipe FaceLandmarker'ı çalıştırır; 52 blendshape ve yüz kutusunu (piksel + normalize) döndürür. |
 | `core/mapping.py` | `EmojiMapper` — EMA yumuşatma, kural değerlendirme, kararlılık sayacı. Yalnızca sözlük alır; mediapipe bile import etmez. |
 | `core/renderer.py` | `BubbleRenderer` — kare üzerine yüz kutusu ve blendshape debug panelini çizer. Emojiyi çizmez. |
@@ -208,6 +208,17 @@ Kök dizindeki üç `scratch_*.py` betiği, uygulamanın tamamını çalıştır
 Tek kamera, tek sahne: kamerayı yalnızca bir arka plan worker'ı okur, tüm bağlantılar aynı kareyi ve aynı emoji kararını alır. `/state` küresel tek bir karar döndürür; izleyici başına ayrı durum yoktur.
 
 Bu **bilinçli bir tasarım kararıdır**, kısıt değil: standda kadrajda tek kişi olur ve tüm ekranların aynı şeyi göstermesi istenir. Sonucu olarak birden fazla sekme açmak akışı yavaşlatmaz — her sekme tam hızda aynı kareleri alır.
+
+### iPhone kamerası (Continuity Camera)
+
+macOS, yakındaki iPhone'u bir kamera olarak listeye ekler ve genellikle **index 0'a**, yani dahili kameranın önüne koyar. Proje bunu koddan çözer:
+
+- Kamera seçimi her `open()` çağrısında **yeniden** yapılır. Uygulama açıkken telefon menzile girip index'leri kaydırsa bile dahili kameraya bağlı kalınır.
+- Dahili kamera yoksa Continuity **olmayan** ilk cihaz (harici webcam) seçilir.
+- Yalnızca telefon bulunursa bağlanmak yerine açıklayıcı bir hata verilir (`NoUsableCameraError`) — telefona sessizce bağlanmaktansa durmak tercih edilir.
+- Hangi kameranın seçildiği log'a yazılır; seçim değişirse yeniden loglanır.
+
+Belirli bir kamerayı zorlamak isterseniz `CameraStream(source=<index>)` kullanın; index'leri görmek için `python scratch_camera.py --list`.
 
 ### Kadrajda birden fazla kişi
 
