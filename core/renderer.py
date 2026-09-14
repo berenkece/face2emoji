@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
@@ -24,6 +24,8 @@ PANEL_ALPHA = 0.72
 
 PANEL_BG = (20, 20, 20)
 PANEL_TEXT = (235, 235, 235)
+#: Panel basligi (kac yuz tespit edildigi) biraz daha sonuk.
+PANEL_TITLE = (170, 200, 170)
 BAR_TRACK = (70, 70, 70)
 BAR_COLOR = (165, 165, 165)
 
@@ -39,36 +41,38 @@ FONT = cv2.FONT_HERSHEY_SIMPLEX
 class BubbleRenderer:
     """Kare üzerine emoji balonlarını ve debug öğelerini çizer."""
 
-    def draw_face_box(self, frame: Frame, bbox: Optional[BBox]) -> Frame:
-        """Yüz sınırlarını ince, sönük bir dikdörtgenle işaretler.
+    def draw_face_box(self, frame: Frame, bboxes: Sequence[Optional[BBox]]) -> Frame:
+        """Her yüzün sınırlarını ince, sönük bir dikdörtgenle işaretler.
 
         Debug amaçlıdır; nihai görselin parçası değildir.
 
         Args:
             frame: Üzerine çizilecek BGR kare.
-            bbox: (x, y, w, h) piksel kutusu, ya da yüz yoksa None.
+            bboxes: (x, y, w, h) piksel kutuları. Boş dizi güvenlidir; dizinin
+                içindeki None değerler atlanır.
 
         Returns:
-            Kutu çizilmiş kare; bbox None ise kare değiştirilmeden döner.
+            Kutular çizilmiş kare (yerinde değiştirilir).
         """
-        if bbox is None:
-            return frame
-
-        x, y, w, h = bbox
-        cv2.rectangle(frame, (x, y), (x + w, y + h), BOX_COLOR, BOX_THICKNESS)
+        for bbox in bboxes or ():
+            if bbox is None:
+                continue
+            x, y, w, h = bbox
+            cv2.rectangle(frame, (x, y), (x + w, y + h), BOX_COLOR, BOX_THICKNESS)
         return frame
 
     def draw_debug(
         self,
         frame: Frame,
-        blendshapes: Dict[str, float],
+        faces: Sequence[Any],
         watch_list: Sequence[str],
     ) -> Frame:
-        """Sol üste izlenen blendshape'leri bar'larla gösteren panel çizer.
+        """Sol üste blendshape panelini çizer; çok yüzde en büyüğünü gösterir.
 
         Args:
             frame: Üzerine çizilecek BGR kare.
-            blendshapes: {isim: skor} sözlüğü. Boşsa panel yerine uyarı yazılır.
+            faces: ``blendshapes`` ve ``bbox`` alanları olan yüz sonuçları.
+                Boşsa panel yerine uyarı yazılır.
             watch_list: Panelde gösterilecek blendshape isimleri, sırasıyla.
 
         Returns:
@@ -76,11 +80,15 @@ class BubbleRenderer:
         """
         height, width = frame.shape[:2]
 
-        if not blendshapes:
+        if not faces:
             cv2.putText(
                 frame, NO_FACE_TEXT, (14, 34), FONT, 0.7, PANEL_TEXT, 2, cv2.LINE_AA
             )
             return frame
+
+        largest = max(faces, key=_bbox_area)
+        blendshapes: Dict[str, float] = dict(getattr(largest, "blendshapes", {}) or {})
+        title = f"{len(faces)} yuz" + (", en buyuk" if len(faces) > 1 else "")
 
         rows = [(name, float(blendshapes.get(name, 0.0))) for name in watch_list]
         if not rows:
@@ -89,7 +97,8 @@ class BubbleRenderer:
         panel_w = int(width * PANEL_MAX_RATIO)
         panel_h = int(height * PANEL_MAX_RATIO)
         pad = max(6, panel_h // 24)
-        row_h = max(1, (panel_h - 2 * pad) // len(rows))
+        # Ilk satir baslik; kalanlar katsayilar.
+        row_h = max(1, (panel_h - 2 * pad) // (len(rows) + 1))
 
         _fill_translucent(frame, 0, 0, panel_w, panel_h)
 
@@ -101,7 +110,12 @@ class BubbleRenderer:
         bar_h = max(3, int(row_h * 0.42))
         font_scale = _fit_font_scale(row_h)
 
-        for i, (name, score) in enumerate(rows):
+        cv2.putText(
+            frame, title, (pad, pad + int(row_h * 0.72)), FONT, font_scale,
+            PANEL_TITLE, 1, cv2.LINE_AA,
+        )
+
+        for i, (name, score) in enumerate(rows, start=1):
             top = pad + i * row_h
             baseline = top + int(row_h * 0.72)
 
@@ -129,6 +143,14 @@ class BubbleRenderer:
                 )
 
         return frame
+
+
+def _bbox_area(face: Any) -> int:
+    """Yüzün piksel kutusunun alanı; kutu yoksa 0."""
+    bbox = getattr(face, "bbox", None)
+    if bbox is None:
+        return 0
+    return int(bbox[2]) * int(bbox[3])
 
 
 def _fill_translucent(frame: Frame, x: int, y: int, w: int, h: int) -> None:

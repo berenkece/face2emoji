@@ -124,9 +124,16 @@ def main() -> None:
         ) as camera:
             cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
             for frame in camera.frames():
-                result = analyzer.analyze(frame)
-                renderer.draw_face_box(frame, result.bbox)
-                renderer.draw_debug(frame, result.blendshapes, WATCH_BLENDSHAPES)
+                faces = analyzer.analyze(frame)
+                # Kalibrasyon tek kisilik: ornek EN BUYUK yuzden alinir ki
+                # arkadan gecen biri kaydi kirletmesin.
+                result = (
+                    max(faces, key=lambda f: f.bbox[2] * f.bbox[3])
+                    if faces
+                    else None
+                )
+                renderer.draw_face_box(frame, [f.bbox for f in faces])
+                renderer.draw_debug(frame, faces, WATCH_BLENDSHAPES)
 
                 if time.monotonic() > message_until:
                     message = ""
@@ -141,7 +148,7 @@ def main() -> None:
                 if label is None:
                     continue
 
-                if not result.detected:
+                if result is None:
                     message = "yuz yok - kaydedilmedi"
                     print("Yuz bulunamadi, ornek kaydedilmedi.")
                 else:

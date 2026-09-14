@@ -8,7 +8,7 @@ Kameraya bakan kişinin yüz ifadesinden hangi emojiye benzediğini bulup görü
 
 Kameradan gelen her kare MediaPipe FaceLandmarker modeline veriliyor; model yüzü bulup 478 landmark ve **52 blendshape katsayısı** üretiyor. Bu katsayılar (`mouthSmileLeft`, `jawOpen`, `browDownRight` gibi) mimiklerin ne kadar güçlü yapıldığını 0-1 arasında ölçüyor. Katsayılar önce üstel hareketli ortalamayla (EMA) yumuşatılıyor, sonra `config.py` içindeki basit kural listesiyle eşleştirilip bir emojiye karar veriliyor; karar birkaç kare üst üste tekrarlanmadan değişmiyor, böylece emoji titremiyor.
 
-Kamerayı **tek bir arka plan worker thread'i** okuyor; tüm tarayıcı bağlantıları bu worker'ın yayımladığı son kareyi alıyor, dolayısıyla kaç sekme açık olursa olsun kare hızı düşmüyor. Görüntü tarayıcıya MJPEG akışı olarak (`/video`) gidiyor. Emoji karenin üzerine **çizilmiyor**: tarayıcı ayrıca `/state` uç noktasını 100 ms'de bir yoklayıp emojiyi ve yüzün normalize koordinatlarını alıyor, baloncuğu HTML/CSS ile videonun üzerine konumlandırıyor. Bu sayede emoji keskin kalıyor ve animasyonlar CSS ile yapılabiliyor.
+Kamerayı **tek bir arka plan worker thread'i** okuyor; tüm tarayıcı bağlantıları bu worker'ın yayımladığı son kareyi alıyor, dolayısıyla kaç sekme açık olursa olsun kare hızı düşmüyor. Görüntü tarayıcıya MJPEG akışı olarak (`/video`) gidiyor. Emoji karenin üzerine **çizilmiyor**: tarayıcı ayrıca `/state` uç noktasını 100 ms'de bir yoklayıp kadrajdaki her kişinin emojisini ve normalize yüz koordinatlarını alıyor, her biri için bir baloncuğu HTML/CSS ile videonun üzerine konumlandırıyor. Bu sayede emoji keskin kalıyor ve animasyonlar CSS ile yapılabiliyor.
 
 ## Ekran Görüntüsü
 
@@ -81,13 +81,14 @@ Temel kural: **`core/` Flask bilmez.** Görüntü işleme ve karar mantığı we
 | `core/camera.py` | `CameraStream` — OpenCV kamera sarmalayıcısı; çözünürlük, ayna görüntüsü, ısınma kareleri, context manager. |
 | `core/devices.py` | macOS'ta kameraları isimleriyle listeler, dahili Mac kamerasının OpenCV index'ini bulur; iPhone/iPad (Continuity Camera) asla otomatik seçilmez. |
 | `core/face.py` | `FaceAnalyzer` — MediaPipe FaceLandmarker'ı çalıştırır; 52 blendshape ve yüz kutusunu (piksel + normalize) döndürür. |
-| `core/mapping.py` | `EmojiMapper` — EMA yumuşatma, kural değerlendirme, kararlılık sayacı. Yalnızca sözlük alır; mediapipe bile import etmez. |
+| `core/tracking.py` | `FaceTracker` — yüzlere kareler arası kalıcı kimlik verir (merkez mesafesiyle açgözlü eşleştirme). Saf Python; cv2/mediapipe/flask import etmez. |
+| `core/mapping.py` | `EmojiMapper` — **kimlik başına** EMA yumuşatma, kural değerlendirme, kararlılık sayacı. Düşen kimlikleri `forget()` ile siler. Yalnızca sözlük alır; mediapipe bile import etmez. |
 | `core/renderer.py` | `BubbleRenderer` — kare üzerine yüz kutusu ve blendshape debug panelini çizer. Emojiyi çizmez. |
 | `core/gesture.py` | **Boş.** El/kafa hareketi tanıma için ayrılmış yer tutucu, henüz yazılmadı. |
 | `app/pipeline.py` | `Pipeline` — üretici-tüketici çekirdeği: worker thread kamerayı okur, analiz eder, karar verir, çizer ve JPEG'i paylaşılan duruma yayımlar; tüketiciler bu kareyi bekleyip gönderir. Kamera kopmasında artan beklemeyle yeniden bağlanır. Flask import etmez. |
-| `app/server.py` | Flask uygulaması: `/` (sayfa), `/video` (MJPEG akışı), `/state` (JSON karar + yüz konumu + `camera_ok`). |
+| `app/server.py` | Flask uygulaması: `/` (sayfa), `/video` (MJPEG akışı), `/state` (her kişi için `id` + emoji + normalize kutu, artı `camera_ok`). |
 | `app/templates/index.html` | Video ve emoji baloncuğunun ortak konumlandırma sarmalayıcısı. |
-| `app/static/js/main.js` | `/state`'i 100 ms'de bir yoklar; `object-fit: contain` ile ölçeklenen görüntünün gerçek dikdörtgenini hesaplayıp baloncuğu doğru piksele koyar. |
+| `app/static/js/main.js` | `/state`'i 100 ms'de bir yoklar; her kişi için bir baloncuk DOM elemanı tutar (havuz), `object-fit: contain` matematiğini her yüz için ayrı uygulayıp baloncuğu doğru piksele koyar. |
 | `app/static/css/style.css` | Baloncuk görünümü, konum geçişi, emoji değişiminde "pop" animasyonu, `prefers-reduced-motion` desteği. |
 
 ## Yapılandırma
@@ -105,7 +106,9 @@ Sık kullanılanlar:
 | `WATCH_BLENDSHAPES` | Debug panelinde gösterilecek katsayılar. |
 | `SMOOTHING_ALPHA` | EMA'da yeni örneğin ağırlığı. Küçültmek daha yumuşak ama daha geç tepki verir. |
 | `STABILITY_FRAMES` | Emojinin değişmesi için gereken üst üste kare sayısı. Büyütmek titremeyi azaltır, gecikmeyi artırır. |
-| `NUM_FACES` | Aynı anda takip edilecek yüz sayısı (şu an 1). |
+| `NUM_FACES` | Aynı anda tespit edilecek en fazla yüz sayısı (şu an 4). |
+| `TRACK_MAX_DISTANCE` | Bir yüzün önceki karedeki kimliğe atanabilmesi için en büyük merkez mesafesi (normalize). |
+| `TRACK_LOST_FRAMES` | Bir kimlik bu kadar kare görünmezse düşürülür ve durumu silinir. |
 | `HOST` / `PORT` | Sunucu adresi. Port 5000'den uzak durun (bkz. Çalıştırma). |
 | `TARGET_FPS` | Worker'ın aşmaya çalışmadığı kare hızı. Düşürmek CPU'yu rahatlatır. |
 | `CAMERA_RECONNECT_DELAYS` | Kamera koptuğunda yeniden bağlanma beklemeleri; son değer tekrarlanır. |
@@ -206,7 +209,7 @@ Kök dizindeki üç `scratch_*.py` betiği, uygulamanın tamamını çalıştır
 
 ### Tüm izleyiciler aynı kararı paylaşır
 
-Tek kamera, tek sahne: kamerayı yalnızca bir arka plan worker'ı okur, tüm bağlantılar aynı kareyi ve aynı emoji kararını alır. `/state` küresel tek bir karar döndürür; izleyici başına ayrı durum yoktur.
+Tek kamera, tek sahne: kamerayı yalnızca bir arka plan worker'ı okur, tüm bağlantılar aynı kareyi ve aynı kişi listesini alır. Karar **kişi başınadır** (kadrajdaki her yüz kendi emojisini taşır) ama **izleyici başına** ayrı durum yoktur; iki sekme açarsanız ikisi de aynı sahneyi görür.
 
 Bu **bilinçli bir tasarım kararıdır**, kısıt değil: standda kadrajda tek kişi olur ve tüm ekranların aynı şeyi göstermesi istenir. Sonucu olarak birden fazla sekme açmak akışı yavaşlatmaz — her sekme tam hızda aynı kareleri alır.
 
@@ -224,7 +227,11 @@ Harici bir webcam kullanmak isterseniz `config.py`'de `CAMERA_REQUIRE_BUILTIN = 
 
 ### Kadrajda birden fazla kişi
 
-`NUM_FACES = 1`. Kadraja ikinci bir kişi girerse modelin hangi yüzü seçtiği garanti değildir; **emoji kişiler arasında zıplayabilir** ve yumuşatma iki farklı yüzün değerlerini karıştırabilir. Stand düzenini tek kişi kadraja girecek şekilde kurun.
+`NUM_FACES = 4`: kadrajda dört kişiye kadar herkes tespit edilir ve **her birinin yanında kendi emojisi** görünür.
+
+MediaPipe yüzleri her karede aynı sırayla döndürmediği için araya bir takipçi katmanı girer ([core/tracking.py](core/tracking.py)): her yüzün kutu merkezi önceki karedeki kimliklerle eşleştirilir (açgözlü, en yakın önce) ve herkese kareler boyunca sabit bir `id` verilir. `EmojiMapper` durumu (EMA + kararlılık sayacı) **kimlik başına** tutulur, böylece kişilerin ifadeleri birbirine karışmaz.
+
+Bilinen sınır: iki yüz **tam üst üste** geçerse kimlikler takas olabilir — merkez tabanlı takibin doğal sınırı. Ölçüldü: aralarında 0.02 normalize dikey ayrım (720p'de ~14 piksel) olduğunda kimlikler korunuyor; yalnızca birebir aynı noktadan geçişte takas oluyor. Pratik etkisi küçük: herkes yine emoji alır, sadece iki kişinin ifade geçmişi yer değiştirir.
 
 ### Debug paneli açık geliyor
 

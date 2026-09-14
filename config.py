@@ -5,7 +5,16 @@ from __future__ import annotations
 # --- Yüz modeli ---
 FACE_MODEL_PATH = "models/face_landmarker.task"
 MIN_FACE_DETECTION_CONFIDENCE = 0.5
-NUM_FACES = 1
+NUM_FACES = 4
+
+# --- Yuz takibi (kimlik eslestirme) ---
+#: Bir yuzun onceki karedeki kimlige atanabilmesi icin merkezler arasindaki
+#: en buyuk mesafe (normalize 0-1 koordinatta). Buyutmek hizli hareketi
+#: tolere eder ama yakin duran kisilerin kimliklerini karistirabilir.
+TRACK_MAX_DISTANCE = 0.15
+
+#: Bir kimlik bu kadar kare ust uste gorunmezse dusurulur ve durumu silinir.
+TRACK_LOST_FRAMES = 15
 
 # --- Kamera ---
 CAMERA_WIDTH = 1280
@@ -24,7 +33,9 @@ CAMERA_REQUIRE_BUILTIN = True
 JPEG_QUALITY = 80
 
 # --- Debug ---
-DEBUG_OVERLAY = True
+#: Blendshape panelini kareye cizer. Stand sunumunda KAPALI olmali;
+#: esik ayari yaparken True yapin.
+DEBUG_OVERLAY = False
 
 #: Debug panelinde izlenecek blendshape'ler (52 katsayıdan seçili olanlar).
 WATCH_BLENDSHAPES = [
@@ -49,10 +60,16 @@ WATCH_BLENDSHAPES = [
 
 #: Kurallar sirayla degerlendirilir; tum kosullari saglayanlar arasindan
 #: skoru en yuksek olan kazanir. Kosul: (blendshape adi, operator, esik).
+#:
+#: "hint" opsiyoneldir: stand ekranindaki ipucu seridinde gosterilen, ziyaretciye
+#: NE YAPACAGINI soyleyen kisa Turkce metin. Verilmezse "label" kullanilir.
+#: Serit bu listeden otomatik uretilir -- yeni kural eklendiginde kendiliginden
+#: gorunur, ayrica elle guncellenmesi gereken bir yer yoktur.
 EMOJI_RULES = [
     {
         "label": "mutlu",
         "emoji": "😄",
+        "hint": "gülümse",
         "conditions": [
             ("mouthSmileLeft", ">", 0.4),
             ("mouthSmileRight", ">", 0.4),
@@ -61,6 +78,7 @@ EMOJI_RULES = [
     {
         "label": "saskin",
         "emoji": "😲",
+        "hint": "şaşır",
         "conditions": [
             ("jawOpen", ">", 0.4),
             ("browInnerUp", ">", 0.3),
@@ -69,6 +87,7 @@ EMOJI_RULES = [
     {
         "label": "kizgin",
         "emoji": "😠",
+        "hint": "kaşlarını çat",
         "conditions": [
             ("browDownLeft", ">", 0.4),
             ("browDownRight", ">", 0.4),
@@ -77,6 +96,7 @@ EMOJI_RULES = [
     {
         "label": "dudak_buzme",
         "emoji": "😗",
+        "hint": "dudak büz",
         "conditions": [
             ("mouthPucker", ">", 0.5),
         ],

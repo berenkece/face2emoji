@@ -3,18 +3,45 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Face2Emoji</title>
+    <title>Face2Emoji — MEF Data Science &amp; AI Society</title>
+    <link
+      rel="icon"
+      type="image/png"
+      href="{{ url_for('static', filename='img/favicon.png') }}"
+    />
     <link
       rel="stylesheet"
       href="{{ url_for('static', filename='css/style.css') }}"
     />
   </head>
   <body>
-    <div class="stage" id="stage">
-      <img id="video" src="/video" alt="Face2Emoji canlı görüntü" />
-      <div id="bubble" aria-live="polite">
-        <div class="face" id="bubble-face">😐</div>
-      </div>
+    <div class="screen">
+      <header class="masthead">
+        <img
+          class="masthead__logo"
+          src="{{ url_for('static', filename='img/logo-mark.png') }}"
+          alt=""
+        />
+        {# Buyuk harf CSS ile degil metinde: lang="tr" altinda text-transform
+           "Science" -> "SCIENCE" yerine "SCİENCE" uretiyor (Turkce i -> İ). #}
+        <h1 class="masthead__title">MEF DATA SCIENCE &amp; AI SOCIETY</h1>
+      </header>
+
+      <main class="stage" id="stage">
+        <img id="video" src="/video" alt="Face2Emoji canlı görüntü" />
+        <div id="bubbles" aria-live="polite"></div>
+      </main>
+
+      {# Ipucu seridi config.EMOJI_RULES'tan uretilir; elle yazilmaz. #}
+      <footer class="hints">
+        {% for hint in hints %}
+        <div class="chip">
+          <span class="chip__emoji">{{ hint.emoji }}</span>
+          <span class="chip__text">{{ hint.text }}</span>
+        </div>
+        {% endfor %}
+      </footer>
+
       <div id="camera-status" role="status" hidden>Kamera yeniden bağlanıyor</div>
     </div>
     <script src="{{ url_for('static', filename='js/main.js') }}"></script>

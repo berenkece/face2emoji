@@ -38,12 +38,17 @@ def main() -> None:
             print("Kameradan kare alinamadi.")
             return
 
-        result = analyzer.analyze(frame)
+        faces = analyzer.analyze(frame)
         print(f"kare: {frame.shape[1]}x{frame.shape[0]}")
-        print(f"yuz bulundu: {result.detected}")
-        if not result.detected:
+        print(f"bulunan yuz sayisi: {len(faces)}")
+        if not faces:
             print("Yuz yok - kameraya bakip tekrar deneyin.")
             return
+
+        # Bu arac tek kisilik kullanim icin: en buyuk yuzu gosterir.
+        result = max(faces, key=lambda f: f.bbox[2] * f.bbox[3])
+        if len(faces) > 1:
+            print("(birden fazla yuz var; en buyugu gosteriliyor)")
 
         print(f"bbox (x, y, w, h): {result.bbox}")
         print(f"blendshape sayisi: {len(result.blendshapes)}")

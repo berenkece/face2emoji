@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import Iterator, NamedTuple, Optional, Tuple
+from typing import Iterator, List, NamedTuple, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -30,9 +30,10 @@ from config import (
     WORKER_STOP_TIMEOUT,
 )
 from core.camera import CameraStream
-from core.face import FaceAnalyzer, FaceResult
+from core.face import FaceAnalyzer, FaceResult, NormBBox
 from core.mapping import EmojiDecision, EmojiMapper
 from core.renderer import BubbleRenderer
+from core.tracking import FaceTracker
 
 logger = logging.getLogger(__name__)
 
@@ -42,11 +43,18 @@ Frame = np.ndarray
 BOUNDARY = b"frame"
 
 
+class FaceState(NamedTuple):
+    """Tek bir kişinin yayımlanmış durumu."""
+
+    id: int
+    decision: EmojiDecision
+    bbox_norm: Optional[NormBBox]
+
+
 class PipelineState(NamedTuple):
     """Tek kilit altında alınmış tutarlı durum görüntüsü."""
 
-    decision: EmojiDecision
-    face_result: FaceResult
+    faces: List[FaceState]
     frame_id: int
     camera_ok: bool
 
@@ -54,16 +62,17 @@ class PipelineState(NamedTuple):
 class Pipeline:
     """Kamerayı tek worker'da okur, tüketicilere son kareyi dağıtır.
 
-    Tasarım kararı: tek kamera, tek sahne. **Tüm izleyiciler aynı EmojiMapper
-    durumunu ve aynı kararı paylaşır**; ``/state`` küresel tek bir karar
-    döndürür. Bu bilinçli bir tercihtir, hata değil: stand kurulumunda kadrajda
-    tek kişi vardır ve tüm ekranların aynı şeyi göstermesi istenir.
+    Tasarım kararı: tek kamera, tek sahne. Karar artık **kişi başınadır** --
+    kadrajdaki her yüz kendi kimliğini, kendi EMA geçmişini ve kendi emojisini
+    taşır. Ama sahne tektir: tüm izleyiciler aynı kareyi ve aynı kişi listesini
+    görür; izleyiciye özel durum yoktur.
     """
 
     def __init__(
         self,
         camera: CameraStream,
         face_analyzer: FaceAnalyzer,
+        tracker: FaceTracker,
         emoji_mapper: EmojiMapper,
         renderer: BubbleRenderer,
     ) -> None:
@@ -72,11 +81,13 @@ class Pipeline:
         Args:
             camera: Kare kaynağı olarak kullanılacak CameraStream.
             face_analyzer: Kareleri analiz edecek FaceAnalyzer.
-            emoji_mapper: Blendshape'lerden emoji seçecek EmojiMapper.
+            tracker: Yüzlere kareler arası kimlik atayacak FaceTracker.
+            emoji_mapper: Kimlik başına emoji seçecek EmojiMapper.
             renderer: Kare üzerine çizim yapacak BubbleRenderer.
         """
         self.camera = camera
         self.face_analyzer = face_analyzer
+        self.tracker = tracker
         self.emoji_mapper = emoji_mapper
         self.renderer = renderer
 
@@ -84,8 +95,7 @@ class Pipeline:
         self._lock = threading.Lock()
         self._cond = threading.Condition(self._lock)
         self._latest_jpeg: Optional[bytes] = None
-        self._latest_face = FaceResult(detected=False)
-        self._latest_decision: EmojiDecision = emoji_mapper.current
+        self._latest_faces: List[FaceState] = []
         self._frame_id = 0
         self._camera_ok = False
 
@@ -180,9 +190,11 @@ class Pipeline:
         """Kare okur, işler ve yayımlar. Programda kameraya dokunan tek yer."""
         interval = 1.0 / TARGET_FPS if TARGET_FPS > 0 else 0.0
         failures = 0
+        # Mutlak hedef zamani: "gecen sureyi olc, kalani uyu" yaklasimi her
+        # turda uyanma gecikmesini biriktirip hizi dusuruyordu (30 yerine 27).
+        next_deadline = time.monotonic() + interval
 
         while not self._stop_event.is_set():
-            started = time.monotonic()
             frame = self.camera.read()
 
             if frame is None:
@@ -190,18 +202,25 @@ class Pipeline:
                 self._set_camera_ok(False)
                 if self._reconnect(failures):
                     failures = 0
+                next_deadline = time.monotonic() + interval
                 continue
 
             failures = 0
             self._publish(frame)
 
-            remaining = interval - (time.monotonic() - started)
+            now = time.monotonic()
+            remaining = next_deadline - now
             if remaining > 0:
                 # Kesintiye ugrayabilen uyku: stop() aninda uyanir.
                 self._stop_event.wait(remaining)
+                next_deadline += interval
+            else:
+                # Geride kaldik: birikmis gecikmeyi kovalamak yerine sifirla,
+                # yoksa sonraki turlar hic uyumadan kosar.
+                next_deadline = now + interval
 
-    def _process(self, frame: Frame) -> Tuple[Frame, FaceResult, EmojiDecision]:
-        """Kareyi analiz eder, kararı üretir ve debug öğelerini çizer.
+    def _process(self, frame: Frame) -> Tuple[Frame, List[FaceState]]:
+        """Kareyi analiz eder, kimlik başına karar üretir, debug öğelerini çizer.
 
         Emoji kareye çizilmez; HTML katmanı ``/state``'ten okur.
 
@@ -209,29 +228,43 @@ class Pipeline:
             frame: İşlenecek BGR kare.
 
         Returns:
-            (çizilmiş kare, yüz sonucu, emoji kararı) üçlüsü.
+            (çizilmiş kare, kişi durumları listesi) ikilisi.
         """
-        face = self.face_analyzer.analyze(frame)
-        decision = self.emoji_mapper.decide(face)
+        faces = self.face_analyzer.analyze(frame)
+        tracked = self.tracker.update(faces)
 
-        drawn = self.renderer.draw_face_box(frame, face.bbox)
-        if DEBUG_OVERLAY:
-            drawn = self.renderer.draw_debug(
-                drawn, face.blendshapes, WATCH_BLENDSHAPES
+        # Dusen kimliklerin durumu SILINMELI: stand boyunca yuzlerce kisi
+        # gececek, temizlenmezse mapper'in sozlugu sinirsiz buyur.
+        for lost_id in self.tracker.dropped_ids:
+            self.emoji_mapper.forget(lost_id)
+
+        states = [
+            FaceState(
+                id=track_id,
+                decision=self.emoji_mapper.decide(track_id, face),
+                bbox_norm=face.bbox_norm,
             )
-        return drawn, face, decision
+            for track_id, face in tracked
+        ]
+
+        # Yuz kutusu da debug ogesi: stand sunumunda ziyaretcinin yuzunde
+        # dikdortgen gorunmesin diye panelle ayni bayraga bagli.
+        drawn = frame
+        if DEBUG_OVERLAY:
+            drawn = self.renderer.draw_face_box(drawn, [f.bbox for f in faces])
+            drawn = self.renderer.draw_debug(drawn, faces, WATCH_BLENDSHAPES)
+        return drawn, states
 
     def _publish(self, frame: Frame) -> None:
         """Kareyi işler ve paylaşılan duruma yazıp tüketicileri uyandırır."""
-        drawn, face, decision = self._process(frame)
+        drawn, states = self._process(frame)
         jpeg = self.encode_jpeg(drawn)
         if jpeg is None:
             return
 
         with self._cond:
             self._latest_jpeg = jpeg
-            self._latest_face = face
-            self._latest_decision = decision
+            self._latest_faces = states
             self._camera_ok = True
             self._frame_id += 1
             self._cond.notify_all()
@@ -314,30 +347,23 @@ class Pipeline:
             )
 
     def snapshot(self) -> PipelineState:
-        """Kararı, yüz sonucunu ve kamera durumunu tek kilit altında döndürür.
+        """Kişi listesini ve kamera durumunu tek kilit altında döndürür.
 
         Returns:
             Aynı kareye ait tutarlı PipelineState.
         """
         with self._cond:
             return PipelineState(
-                decision=self._latest_decision,
-                face_result=self._latest_face,
+                faces=list(self._latest_faces),
                 frame_id=self._frame_id,
                 camera_ok=self._camera_ok,
             )
 
     @property
-    def current_decision(self) -> EmojiDecision:
-        """Kilit altında okunan son emoji kararı."""
+    def faces(self) -> List[FaceState]:
+        """Kilit altında okunan son kişi listesi."""
         with self._cond:
-            return self._latest_decision
-
-    @property
-    def last_face_result(self) -> FaceResult:
-        """Kilit altında okunan son yüz analizi sonucu."""
-        with self._cond:
-            return self._latest_face
+            return list(self._latest_faces)
 
     # --- yardımcı ----------------------------------------------------------
 

@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 import time
 from dataclasses import dataclass, field
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import cv2
 import mediapipe as mp
@@ -98,15 +98,18 @@ class FaceAnalyzer:
         self._last_timestamp_ms = timestamp
         return timestamp
 
-    def analyze(self, frame_bgr: Frame) -> FaceResult:
-        """Tek bir kareyi analiz eder.
+    def analyze(self, frame_bgr: Frame) -> List[FaceResult]:
+        """Bir karedeki tüm yüzleri analiz eder.
+
+        En fazla ``num_faces`` yüz döndürülür. MediaPipe yüzleri her karede
+        aynı sırayla vermeyebilir; kimlik eşleştirmesi core.tracking'in işidir.
 
         Args:
             frame_bgr: Analiz edilecek BGR kare.
 
         Returns:
-            Yüz bulunduysa blendshape'ler ve piksel bbox'ı ile dolu FaceResult,
-            aksi hâlde ``detected=False`` olan FaceResult.
+            Her yüz için bir FaceResult (kendi blendshape'leri ve bbox'ıyla).
+            Yüz yoksa **boş liste**.
 
         Raises:
             RuntimeError: load() çağrılmadan kullanılırsa.
@@ -119,25 +122,30 @@ class FaceAnalyzer:
         result = self._landmarker.detect_for_video(image, self._next_timestamp_ms())
 
         if not result.face_landmarks:
-            return FaceResult(detected=False)
+            return []
 
-        landmarks = result.face_landmarks[0]
         height, width = frame_bgr.shape[:2]
+        all_blendshapes = result.face_blendshapes or []
 
-        blendshapes: Dict[str, float] = {}
-        if result.face_blendshapes:
-            blendshapes = {
-                category.category_name: float(category.score)
-                for category in result.face_blendshapes[0]
-            }
+        faces: List[FaceResult] = []
+        for index, landmarks in enumerate(result.face_landmarks):
+            blendshapes: Dict[str, float] = {}
+            if index < len(all_blendshapes):
+                blendshapes = {
+                    category.category_name: float(category.score)
+                    for category in all_blendshapes[index]
+                }
 
-        bbox_norm = _landmarks_to_bbox_norm(landmarks)
-        return FaceResult(
-            detected=True,
-            blendshapes=blendshapes,
-            bbox=_norm_bbox_to_pixels(bbox_norm, width, height),
-            bbox_norm=bbox_norm,
-        )
+            bbox_norm = _landmarks_to_bbox_norm(landmarks)
+            faces.append(
+                FaceResult(
+                    detected=True,
+                    blendshapes=blendshapes,
+                    bbox=_norm_bbox_to_pixels(bbox_norm, width, height),
+                    bbox_norm=bbox_norm,
+                )
+            )
+        return faces
 
     def close(self) -> None:
         """Modeli serbest bırakır. Birden çok kez çağrılabilir."""

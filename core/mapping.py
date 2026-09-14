@@ -7,8 +7,8 @@ import eder, dolayısıyla test edilmesi için kamera ya da model gerekmez.
 from __future__ import annotations
 
 import operator
-from dataclasses import dataclass
-from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple
+from dataclasses import dataclass, field
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 #: Kural koşullarında kullanılabilecek operatörler.
 OPERATORS: Dict[str, Callable[[float, float], bool]] = {
@@ -29,6 +29,16 @@ class EmojiDecision:
     emoji: str
     label: str
     score: float
+
+
+@dataclass
+class _TrackState:
+    """Tek bir kimliğin yumuşatma ve kararlılık durumu."""
+
+    decision: EmojiDecision
+    smoothed: Dict[str, float] = field(default_factory=dict)
+    candidate_label: Optional[str] = None
+    candidate_streak: int = 0
 
 
 class EmojiMapper:
@@ -57,56 +67,75 @@ class EmojiMapper:
         self.alpha = alpha
         self.stability_frames = max(1, stability_frames)
 
-        #: Blendshape adı -> EMA ile yumuşatılmış değer.
-        self._smoothed: Dict[str, float] = {}
-        #: Şu an ekranda olan karar.
-        self._current: EmojiDecision = self.fallback
-        #: Kararı değiştirmeye çalışan aday etiketi ve üst üste kaç kez kazandığı.
-        self._candidate_label: Optional[str] = None
-        self._candidate_streak: int = 0
+        #: track_id -> o kisinin yumusatma ve kararlilik durumu.
+        self._tracks: Dict[int, _TrackState] = {}
 
     @property
-    def current(self) -> EmojiDecision:
-        """Şu an geçerli olan kararı döndürür."""
-        return self._current
+    def track_count(self) -> int:
+        """Durumu tutulan kimlik sayısı (sızıntı testleri için)."""
+        return len(self._tracks)
+
+    @property
+    def tracked_ids(self) -> List[int]:
+        """Durumu tutulan kimlikler."""
+        return list(self._tracks)
 
     def reset(self) -> None:
-        """Yumuşatmayı, adayı ve kararı başlangıç durumuna döndürür."""
-        self._smoothed.clear()
-        self._current = self.fallback
-        self._candidate_label = None
-        self._candidate_streak = 0
+        """Tüm kimliklerin durumunu siler."""
+        self._tracks.clear()
 
-    def decide(self, face_result: Any) -> EmojiDecision:
-        """Bir yüz sonucundan emoji kararı üretir.
+    def forget(self, track_id: int) -> None:
+        """Bir kimliğin durumunu siler; kimlik yoksa sessizce geçer.
+
+        Stand boyunca yüzlerce kişi geçeceği için düşen kimliklerin durumu
+        mutlaka silinmelidir; aksi hâlde bu sözlük sınırsız büyür.
 
         Args:
-            face_result: ``detected`` ve ``blendshapes`` alanları olan sonuç
-                (core.face.FaceResult). Tip bağı kurulmaz; sözlük yeter.
+            track_id: Unutulacak kimlik.
+        """
+        self._tracks.pop(track_id, None)
+
+    def decide(self, track_id: int, face_result: Any) -> EmojiDecision:
+        """Bir kimliğin yüz sonucundan emoji kararı üretir.
+
+        Her kimliğin kendi EMA geçmişi ve kararlılık sayacı vardır; kişiler
+        birbirinin durumunu etkilemez.
+
+        Args:
+            track_id: FaceTracker'ın verdiği kalıcı kimlik.
+            face_result: ``detected`` ve ``blendshapes`` alanları olan sonuç.
+                Tip bağı kurulmaz; sözlük yeter.
 
         Returns:
             Kararlılık kuralı uygulanmış EmojiDecision.
         """
         if not face_result.detected:
-            self.reset()
-            return self._current
+            self.forget(track_id)
+            return self.fallback
 
-        self._update_smoothed(face_result.blendshapes)
-        winner = self._best_rule()
-        return self._apply_stability(winner)
+        state = self._tracks.get(track_id)
+        if state is None:
+            state = _TrackState(decision=self.fallback)
+            self._tracks[track_id] = state
 
-    def _update_smoothed(self, blendshapes: Mapping[str, float]) -> None:
+        self._update_smoothed(state, face_result.blendshapes)
+        winner = self._best_rule(state)
+        return self._apply_stability(state, winner)
+
+    def _update_smoothed(
+        self, state: "_TrackState", blendshapes: Mapping[str, float]
+    ) -> None:
         """Gelen katsayıları üstel hareketli ortalamayla yumuşatır."""
         for name, value in blendshapes.items():
-            previous = self._smoothed.get(name)
+            previous = state.smoothed.get(name)
             if previous is None:
-                self._smoothed[name] = float(value)
+                state.smoothed[name] = float(value)
             else:
-                self._smoothed[name] = (
+                state.smoothed[name] = (
                     self.alpha * float(value) + (1.0 - self.alpha) * previous
                 )
 
-    def _best_rule(self) -> EmojiDecision:
+    def _best_rule(self, state: "_TrackState") -> EmojiDecision:
         """Tüm koşulları sağlanan kurallardan en yüksek skorluyu seçer.
 
         Returns:
@@ -116,7 +145,7 @@ class EmojiMapper:
 
         for rule in self.rules:
             conditions: Sequence[Condition] = rule["conditions"]
-            values = [self._smoothed.get(name, 0.0) for name, _, _ in conditions]
+            values = [state.smoothed.get(name, 0.0) for name, _, _ in conditions]
 
             satisfied = all(
                 OPERATORS[op](value, threshold)
@@ -135,10 +164,12 @@ class EmojiMapper:
 
         return best if best is not None else self.fallback
 
-    def _apply_stability(self, winner: EmojiDecision) -> EmojiDecision:
+    def _apply_stability(
+        self, state: "_TrackState", winner: EmojiDecision
+    ) -> EmojiDecision:
         """Kararı ancak aday üst üste yeterince kazandıysa değiştirir.
 
-        Sayaç mantığı:
+        Sayaç mantığı (kimlik başına):
           - Kazanan mevcut kararla aynı etikete sahipse: aday sıfırlanır ve
             mevcut kararın skoru tazelenir.
           - Farklıysa: aynı aday üst üste geldikçe sayaç artar, aday değişirse
@@ -146,26 +177,27 @@ class EmojiMapper:
             değişir ve sayaç sıfırlanır. O ana kadar eski karar döndürülür.
 
         Args:
+            state: Bu kimliğin durumu.
             winner: Bu karenin kural kazananı.
 
         Returns:
             Ekranda gösterilecek karar.
         """
-        if winner.label == self._current.label:
-            self._candidate_label = None
-            self._candidate_streak = 0
-            self._current = winner
-            return self._current
+        if winner.label == state.decision.label:
+            state.candidate_label = None
+            state.candidate_streak = 0
+            state.decision = winner
+            return state.decision
 
-        if winner.label == self._candidate_label:
-            self._candidate_streak += 1
+        if winner.label == state.candidate_label:
+            state.candidate_streak += 1
         else:
-            self._candidate_label = winner.label
-            self._candidate_streak = 1
+            state.candidate_label = winner.label
+            state.candidate_streak = 1
 
-        if self._candidate_streak >= self.stability_frames:
-            self._current = winner
-            self._candidate_label = None
-            self._candidate_streak = 0
+        if state.candidate_streak >= self.stability_frames:
+            state.decision = winner
+            state.candidate_label = None
+            state.candidate_streak = 0
 
-        return self._current
+        return state.decision

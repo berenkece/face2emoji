@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, List
 
-from flask import Flask, Response, render_template
+from flask import Flask, Response, render_template, send_from_directory
 
 from app.pipeline import BOUNDARY, Pipeline
+from config import EMOJI_RULES
 
 MJPEG_MIMETYPE = f"multipart/x-mixed-replace; boundary={BOUNDARY.decode()}"
 
@@ -26,8 +27,15 @@ def create_app(pipeline: Pipeline) -> Flask:
 
     @app.get("/")
     def index() -> str:
-        """Video akışını gösteren sayfayı döndürür."""
-        return render_template("index.html")
+        """Stand ekranını döndürür; ipucu şeridi EMOJI_RULES'tan üretilir."""
+        return render_template("index.html", hints=_rule_hints())
+
+    @app.get("/favicon.ico")
+    def favicon() -> Response:
+        """Tarayıcının kök dizinden istediği favicon'u karşılar (404 olmasın)."""
+        return send_from_directory(
+            app.static_folder, "img/favicon.png", mimetype="image/png"
+        )
 
     @app.get("/video")
     def video() -> Response:
@@ -45,6 +53,21 @@ def create_app(pipeline: Pipeline) -> Flask:
     return app
 
 
+def _rule_hints() -> List[Dict[str, str]]:
+    """İpucu şeridinin içeriğini EMOJI_RULES'tan üretir.
+
+    Şerit elle yazılmaz: yeni bir kural eklendiğinde kendiliğinden görünür.
+    ``hint`` alanı yoksa ``label`` kullanılır.
+
+    Returns:
+        Her kural için ``emoji`` ve ``text`` taşıyan sözlükler.
+    """
+    return [
+        {"emoji": rule["emoji"], "text": rule.get("hint") or rule["label"]}
+        for rule in EMOJI_RULES
+    ]
+
+
 def _state_payload(pipeline: Pipeline) -> Dict[str, Any]:
     """Pipeline'ın son durumunu JSON'a uygun sözlüğe çevirir.
 
@@ -52,23 +75,32 @@ def _state_payload(pipeline: Pipeline) -> Dict[str, Any]:
         pipeline: Durumu okunacak Pipeline.
 
     Returns:
-        ``emoji``, ``label``, ``score``, yüz yoksa None olan ``face`` ve
-        kamera yeniden bağlanırken False olan ``camera_ok`` alanları.
+        Kamera yeniden bağlanırken False olan ``camera_ok`` ve kadrajdaki her
+        kişi için bir girdi taşıyan ``faces`` listesi (``id``, ``emoji``,
+        ``label``, ``score``, normalize ``box``). Yüz yoksa ``faces`` boştur.
     """
-    # Tek kilit altinda alinmis tutarli goruntu: karar ile yuz kutusu ayni
-    # kareden gelir, ikisi farkli karelerden karismaz.
+    # Tek kilit altinda alinmis tutarli goruntu: kararlar ile yuz kutulari
+    # ayni kareden gelir, farkli karelerden karismaz.
     state = pipeline.snapshot()
-    bbox_norm = state.face_result.bbox_norm
 
-    face = None
-    if state.face_result.detected and bbox_norm is not None:
-        x, y, w, h = bbox_norm
-        face = {"x": round(x, 4), "y": round(y, 4), "w": round(w, 4), "h": round(h, 4)}
+    faces = []
+    for face in state.faces:
+        if face.bbox_norm is None:
+            continue
+        x, y, w, h = face.bbox_norm
+        faces.append(
+            {
+                "id": face.id,
+                "emoji": face.decision.emoji,
+                "label": face.decision.label,
+                "score": round(face.decision.score, 4),
+                "box": {
+                    "x": round(x, 4),
+                    "y": round(y, 4),
+                    "w": round(w, 4),
+                    "h": round(h, 4),
+                },
+            }
+        )
 
-    return {
-        "emoji": state.decision.emoji,
-        "label": state.decision.label,
-        "score": round(state.decision.score, 4),
-        "face": face,
-        "camera_ok": state.camera_ok,
-    }
+    return {"camera_ok": state.camera_ok, "faces": faces}
